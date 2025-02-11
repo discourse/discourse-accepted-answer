@@ -19,10 +19,8 @@ register_asset "stylesheets/mobile/solutions.scss", :mobile
 after_initialize do
   module ::DiscourseSolved
     PLUGIN_NAME = "discourse-solved"
-    AUTO_CLOSE_TOPIC_TIMER_CUSTOM_FIELD = "solved_auto_close_topic_timer_id"
     ACCEPTED_ANSWER_POST_ID_CUSTOM_FIELD = "accepted_answer_post_id"
     ENABLE_ACCEPTED_ANSWERS_CUSTOM_FIELD = "enable_accepted_answers"
-    IS_ACCEPTED_ANSWER_CUSTOM_FIELD = "is_accepted_answer"
 
     class Engine < ::Rails::Engine
       engine_name PLUGIN_NAME
@@ -44,6 +42,7 @@ after_initialize do
   require_relative "app/lib/user_summary_extension"
   require_relative "app/lib/web_hook_extension"
   require_relative "app/serializers/concerns/topic_answer_mixin"
+  require_relative "app/models/discourse-solved/solution.rb"
 
   require_relative "app/lib/plugin_initializers/assigned_reminder_exclude_solved"
   DiscourseSolved::AssignsReminderForTopicsQuery.new(self).apply_plugin_api
@@ -53,18 +52,16 @@ after_initialize do
       topic ||= post.topic
 
       DistributedMutex.synchronize("discourse_solved_toggle_answer_#{topic.id}") do
-        accepted_id = topic.custom_fields[ACCEPTED_ANSWER_POST_ID_CUSTOM_FIELD].to_i
-
-        if accepted_id > 0
-          if p2 = Post.find_by(id: accepted_id)
-            p2.custom_fields.delete(IS_ACCEPTED_ANSWER_CUSTOM_FIELD)
-            p2.save!
-
-            UserAction.where(action_type: UserAction::SOLVED, target_post_id: p2.id).destroy_all
-          end
+        if topic.solution.present?
+          UserAction.where(
+            action_type: UserAction::SOLVED,
+            target_post_id: topic.solution.answer_post_id,
+          ).destroy_all
+          topic.solution.destroy!
         end
 
-        post.custom_fields[IS_ACCEPTED_ANSWER_CUSTOM_FIELD] = "true"
+        solution = DiscourseSolved::Solution.create(topic:, post:, accepter_user_id: acting_user.id)
+
         topic.custom_fields[ACCEPTED_ANSWER_POST_ID_CUSTOM_FIELD] = post.id
 
         UserAction.log_action!(
@@ -119,13 +116,13 @@ after_initialize do
               duration_minutes: auto_close_hours * 60,
             )
 
-          topic.custom_fields[AUTO_CLOSE_TOPIC_TIMER_CUSTOM_FIELD] = topic_timer.id
+          solution.topic_timer_id = topic_timer.id
 
           MessageBus.publish("/topic/#{topic.id}", reload_topic: true)
         end
 
         topic.save!
-        post.save!
+        solution.save!
 
         if WebHook.active_web_hooks(:accepted_solution).exists?
           payload = WebHook.generate_payload(:post, post)
@@ -143,17 +140,10 @@ after_initialize do
       return if topic.nil?
 
       DistributedMutex.synchronize("discourse_solved_toggle_answer_#{topic.id}") do
-        post.custom_fields.delete(IS_ACCEPTED_ANSWER_CUSTOM_FIELD)
+        topic.solution&.destroy!
         topic.custom_fields.delete(ACCEPTED_ANSWER_POST_ID_CUSTOM_FIELD)
 
-        if timer_id = topic.custom_fields[AUTO_CLOSE_TOPIC_TIMER_CUSTOM_FIELD]
-          topic_timer = TopicTimer.find_by(id: timer_id)
-          topic_timer.destroy! if topic_timer
-          topic.custom_fields.delete(AUTO_CLOSE_TOPIC_TIMER_CUSTOM_FIELD)
-        end
-
         topic.save!
-        post.save!
 
         # TODO remove_action! does not allow for this type of interface
         UserAction.where(action_type: UserAction::SOLVED, target_post_id: post.id).destroy_all
@@ -191,6 +181,12 @@ after_initialize do
     ::PostSerializer.prepend(DiscourseSolved::PostSerializerExtension)
     ::UserSummary.prepend(DiscourseSolved::UserSummaryExtension)
     ::Topic.attr_accessor(:accepted_answer_user_id)
+    ::Topic.has_one(:solution, class_name: ::DiscourseSolved::Solution.to_s)
+    ::Post.has_one(
+      :solution,
+      class_name: ::DiscourseSolved::Solution.to_s,
+      foreign_key: :answer_post_id,
+    )
     ::TopicPostersSummary.alias_method(:old_user_ids, :user_ids)
     ::TopicPostersSummary.prepend(DiscourseSolved::TopicPostersSummaryExtension)
     [
@@ -247,18 +243,12 @@ after_initialize do
 
   Discourse::Application.routes.append { mount ::DiscourseSolved::Engine, at: "solution" }
 
-  on(:post_destroyed) do |post|
-    if post.custom_fields[::DiscourseSolved::IS_ACCEPTED_ANSWER_CUSTOM_FIELD] == "true"
-      ::DiscourseSolved.unaccept_answer!(post)
-    end
-  end
+  on(:post_destroyed) { |post| ::DiscourseSolved.unaccept_answer!(post) if post.solution }
 
   add_api_key_scope(
     :solved,
     { answer: { actions: %w[discourse_solved/answer#accept discourse_solved/answer#unaccept] } },
   )
-
-  topic_view_post_custom_fields_allowlister { [::DiscourseSolved::IS_ACCEPTED_ANSWER_CUSTOM_FIELD] }
 
   register_html_builder("server:before-head-close-crawler") do |controller|
     DiscourseSolved::BeforeHeadClose.new(controller).html
@@ -271,8 +261,7 @@ after_initialize do
   Report.add_report("accepted_solutions") do |report|
     report.data = []
 
-    accepted_solutions =
-      TopicCustomField.where(name: ::DiscourseSolved::ACCEPTED_ANSWER_POST_ID_CUSTOM_FIELD)
+    accepted_solutions = DiscourseSolved::Solution
 
     category_id, include_subcategories = report.add_category_filter
     if category_id
@@ -289,17 +278,17 @@ after_initialize do
     end
 
     accepted_solutions
-      .where("topic_custom_fields.created_at >= ?", report.start_date)
-      .where("topic_custom_fields.created_at <= ?", report.end_date)
-      .group("DATE(topic_custom_fields.created_at)")
-      .order("DATE(topic_custom_fields.created_at)")
+      .where("discourse_solved_solutions.created_at >= ?", report.start_date)
+      .where("discourse_solved_solutions.created_at <= ?", report.end_date)
+      .group("DATE(discourse_solved_solutions.created_at)")
+      .order("DATE(discourse_solved_solutions.created_at)")
       .count
       .each { |date, count| report.data << { x: date, y: count } }
     report.total = accepted_solutions.count
     report.prev30Days =
       accepted_solutions
-        .where("topic_custom_fields.created_at >= ?", report.start_date - 30.days)
-        .where("topic_custom_fields.created_at <= ?", report.start_date)
+        .where("discourse_solved_solutions.created_at >= ?", report.start_date - 30.days)
+        .where("discourse_solved_solutions.created_at <= ?", report.start_date)
         .count
   end
 
@@ -308,10 +297,8 @@ after_initialize do
       condition = <<~SQL
           EXISTS (
             SELECT 1
-              FROM topic_custom_fields
+              FROM discourse_solved_solutions
              WHERE topic_id = topics.id
-               AND name = '#{::DiscourseSolved::ACCEPTED_ANSWER_POST_ID_CUSTOM_FIELD}'
-               AND value IS NOT NULL
           )
         SQL
 
@@ -329,7 +316,10 @@ after_initialize do
     scope.can_accept_answer?(topic, object) && accepted_answer
   end
   add_to_serializer(:post, :accepted_answer) do
-    post_custom_fields[::DiscourseSolved::IS_ACCEPTED_ANSWER_CUSTOM_FIELD] == "true"
+    if topic&.custom_fields&.[](::DiscourseSolved::ACCEPTED_ANSWER_POST_ID_CUSTOM_FIELD).nil?
+      return false
+    end
+    topic.solution.answer_post_id == object.id
   end
   add_to_serializer(:post, :topic_accepted_answer) do
     topic&.custom_fields&.[](::DiscourseSolved::ACCEPTED_ANSWER_POST_ID_CUSTOM_FIELD).present?
@@ -409,10 +399,8 @@ after_initialize do
         sql = <<~SQL
           NOT EXISTS (
             SELECT 1
-              FROM topic_custom_fields
+              FROM discourse_solved_solutions
              WHERE topic_id = topics.id
-               AND name = '#{::DiscourseSolved::ACCEPTED_ANSWER_POST_ID_CUSTOM_FIELD}'
-               AND value IS NOT NULL
           )
         SQL
 

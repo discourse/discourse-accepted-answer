@@ -248,15 +248,13 @@ RSpec.describe "Managing Posts solved status" do
       post "/solution/accept.json", params: { id: p1.id }
 
       expect(response.status).to eq(200)
-      expect(p1.reload.custom_fields["is_accepted_answer"]).to eq("true")
+      expect(p1.reload.solution.present?).to eq(true)
 
       topic.reload
 
       expect(topic.public_topic_timer.status_type).to eq(TopicTimer.types[:silent_close])
 
-      expect(topic.custom_fields["solved_auto_close_topic_timer_id"].to_i).to eq(
-        topic.public_topic_timer.id,
-      )
+      expect(topic.solution.topic_timer_id).to eq(topic.public_topic_timer.id)
 
       expect(topic.public_topic_timer.execute_at).to eq_time(Time.zone.now + 2.hours)
 
@@ -274,15 +272,13 @@ RSpec.describe "Managing Posts solved status" do
       post "/solution/accept.json", params: { id: post_2.id }
 
       expect(response.status).to eq(200)
-      expect(post_2.reload.custom_fields["is_accepted_answer"]).to eq("true")
+      expect(post_2.reload.solution.present?).to eq(true)
 
       topic_2.reload
 
       expect(topic_2.public_topic_timer.status_type).to eq(TopicTimer.types[:silent_close])
 
-      expect(topic_2.custom_fields["solved_auto_close_topic_timer_id"].to_i).to eq(
-        topic_2.public_topic_timer.id,
-      )
+      expect(topic_2.solution.topic_timer_id).to eq(topic_2.public_topic_timer.id)
 
       expect(topic_2.public_topic_timer.execute_at).to eq_time(Time.zone.now + 4.hours)
 
@@ -322,7 +318,7 @@ RSpec.describe "Managing Posts solved status" do
       p1.reload
       topic.reload
 
-      expect(p1.custom_fields["is_accepted_answer"]).to eq("true")
+      expect(p1.solution.present?).to eq(true)
       expect(topic.public_topic_timer).to eq(nil)
       expect(topic.closed).to eq(true)
     end
@@ -338,7 +334,7 @@ RSpec.describe "Managing Posts solved status" do
       expect(response.status).to eq(200)
 
       p1.reload
-      expect(p1.custom_fields["is_accepted_answer"]).to eq("true")
+      expect(p1.solution.present?).to eq(true)
     end
 
     it "removes the solution when the post is deleted" do
@@ -348,13 +344,13 @@ RSpec.describe "Managing Posts solved status" do
       expect(response.status).to eq(200)
 
       reply.reload
-      expect(reply.custom_fields["is_accepted_answer"]).to eq("true")
+      expect(reply.solution.present?).to eq(true)
       expect(reply.topic.custom_fields["accepted_answer_post_id"].to_i).to eq(reply.id)
 
       PostDestroyer.new(Discourse.system_user, reply).destroy
 
       reply.reload
-      expect(reply.custom_fields["is_accepted_answer"]).to eq(nil)
+      expect(reply.solution).to eq(nil)
       expect(reply.topic.custom_fields["accepted_answer_post_id"]).to eq(nil)
     end
 
@@ -395,7 +391,7 @@ RSpec.describe "Managing Posts solved status" do
         expect(response.status).to eq(200)
         p1.reload
 
-        expect(p1.custom_fields["is_accepted_answer"]).to eq(nil)
+        expect(p1.solution).to eq(nil)
         expect(p1.topic.custom_fields["accepted_answer_post_id"]).to eq(nil)
       end
     end
@@ -457,7 +453,7 @@ RSpec.describe "Managing Posts solved status" do
         expect(p1.topic.assignment.status).to eq("New")
         DiscourseSolved.accept_answer!(p1, user)
 
-        expect(p1.reload.custom_fields["is_accepted_answer"]).to eq("true")
+        expect(p1.reload.solution.present?).to eq(true)
         expect(p1.topic.assignment.reload.status).to eq("Done")
       end
 
@@ -472,7 +468,7 @@ RSpec.describe "Managing Posts solved status" do
 
         DiscourseSolved.unaccept_answer!(p1)
 
-        expect(p1.reload.custom_fields["is_accepted_answer"]).to eq(nil)
+        expect(p1.reload.solution).to eq(nil)
         expect(p1.reload.topic.assignment.reload.status).to eq("New")
       end
 

@@ -40,10 +40,7 @@ class DiscourseSolved::BeforeHeadClose
       },
     }
 
-    if accepted_answer =
-         Post.find_by(
-           id: topic.custom_fields[::DiscourseSolved::ACCEPTED_ANSWER_POST_ID_CUSTOM_FIELD],
-         )
+    if accepted_answer = topic.solution&.post
       question_json["answerCount"] = 1
       question_json[:acceptedAnswer] = {
         "@type" => "Answer",

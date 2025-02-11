@@ -18,12 +18,7 @@ module DiscourseSolved
     def apply_plugin_api
       plugin.register_modifier(:assigns_reminder_assigned_topics_query) do |query|
         next query if !SiteSetting.ignore_solved_topics_in_assigned_reminder
-        query.where.not(
-          id:
-            TopicCustomField.where(
-              name: ::DiscourseSolved::ACCEPTED_ANSWER_POST_ID_CUSTOM_FIELD,
-            ).pluck(:topic_id),
-        )
+        query.where.not(id: DiscourseSolved::Solution.select(:topic_id))
       end
     end
   end

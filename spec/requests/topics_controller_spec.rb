@@ -45,10 +45,10 @@ RSpec.describe TopicsController do
 
       expect(response.body).to include(schema_json(0))
 
-      p2.custom_fields["is_accepted_answer"] = true
-      p2.save_custom_fields
       topic.custom_fields["accepted_answer_post_id"] = p2.id
       topic.save_custom_fields
+
+      Fabricate(:solution, topic_id: topic.id, answer_post_id: p2.id)
 
       get "/t/#{topic.slug}/#{topic.id}"
 
@@ -68,10 +68,9 @@ RSpec.describe TopicsController do
 
     it "should include user name in output with the corresponding site setting" do
       SiteSetting.display_name_on_posts = true
-      p2.custom_fields["is_accepted_answer"] = true
-      p2.save_custom_fields
       topic.custom_fields["accepted_answer_post_id"] = p2.id
       topic.save_custom_fields
+      Fabricate(:solution, topic_id: topic.id, answer_post_id: p2.id)
 
       get "/t/#{topic.slug}/#{topic.id}.json"
 
@@ -87,10 +86,9 @@ RSpec.describe TopicsController do
 
     it "should not include user name when site setting is disabled" do
       SiteSetting.display_name_on_posts = false
-      p2.custom_fields["is_accepted_answer"] = true
-      p2.save_custom_fields
       topic.custom_fields["accepted_answer_post_id"] = p2.id
       topic.save_custom_fields
+      Fabricate(:solution, topic_id: topic.id, answer_post_id: p2.id)
 
       get "/t/#{topic.slug}/#{topic.id}.json"
 
@@ -106,10 +104,9 @@ RSpec.describe TopicsController do
 
     it "includes the correct schema information" do
       DiscourseTagging.add_or_create_tags_by_name(topic, [tag.name])
-      p2.custom_fields["is_accepted_answer"] = true
-      p2.save_custom_fields
       topic.custom_fields["accepted_answer_post_id"] = p2.id
       topic.save_custom_fields
+      Fabricate(:solution, topic_id: topic.id, answer_post_id: p2.id)
 
       get "/t/#{topic.slug}/#{topic.id}"
 

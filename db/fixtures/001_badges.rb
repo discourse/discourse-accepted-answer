@@ -3,14 +3,13 @@
 first_solution_query = <<~SQL
   SELECT post_id, user_id, created_at AS granted_at
   FROM (
-           SELECT p.id AS post_id, p.user_id, pcf.created_at,
-                  ROW_NUMBER() OVER (PARTITION BY p.user_id ORDER BY pcf.created_at) AS row_number
-           FROM post_custom_fields pcf
-                JOIN badge_posts p ON pcf.post_id = p.id
-                JOIN topics t ON p.topic_id = t.id
-           WHERE pcf.name = 'is_accepted_answer'
-             AND p.user_id <> t.user_id -- ignore topics solved by OP
-             AND (:backfill OR p.id IN (:post_ids))
+           SELECT p.id AS post_id, p.user_id, dss.created_at,
+              ROW_NUMBER() OVER (PARTITION BY p.user_id ORDER BY dss.created_at) AS row_number
+           FROM discourse_solved_solutions dss
+              JOIN badge_posts p ON dss.answer_post_id = p.id
+              JOIN topics t ON p.topic_id = t.id
+           WHERE p.user_id <> t.user_id -- ignore topics solved by OP
+              AND (:backfill OR p.id IN (:post_ids))
        ) x
   WHERE row_number = 1
 SQL
@@ -32,12 +31,11 @@ end
 
 def solved_query_with_count(min_count)
   <<~SQL
-    SELECT p.user_id, MAX(pcf.created_at) AS granted_at
-    FROM post_custom_fields pcf
-         JOIN badge_posts p ON pcf.post_id = p.id
+    SELECT p.user_id, MAX(dss.created_at) AS granted_at
+    FROM discourse_solved_solutions dss
+         JOIN badge_posts p ON dss.answer_post_id = p.id
          JOIN topics t ON p.topic_id = t.id
-    WHERE pcf.name = 'is_accepted_answer'
-      AND p.user_id <> t.user_id -- ignore topics solved by OP
+    WHERE p.user_id <> t.user_id -- ignore topics solved by OP
       AND (:backfill OR p.id IN (:post_ids))
     GROUP BY p.user_id
     HAVING COUNT(*) >= #{min_count}
